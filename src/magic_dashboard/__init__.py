@@ -1,0 +1,2 @@
+"""MagicDashboard shortcut launcher."""
+
