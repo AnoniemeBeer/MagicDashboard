@@ -42,4 +42,3 @@ Use the `Config` button in the app to open this folder.
 - Groups are managed from the left sidebar.
 - Click a shortcut card's `Open` button to launch it.
 - Use `Select` on a shortcut card before `Move up`, `Move down`, or `Remove`.
-# MagicDashboard
