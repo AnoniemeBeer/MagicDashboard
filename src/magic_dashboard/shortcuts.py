@@ -130,7 +130,40 @@ def _extract_icon_to_png(source: Path, icon_index: int, target: Path) -> str | N
 def open_config_folder() -> None:
     folder = app_data_dir()
     folder.mkdir(parents=True, exist_ok=True)
+    open_folder(folder)
+
+
+def open_folder(path: str | Path) -> None:
+    folder = Path(path)
     if sys.platform == "win32":
         os.startfile(folder)  # type: ignore[attr-defined]
     else:
         subprocess.Popen(["xdg-open", str(folder)])
+
+
+def is_svn_working_copy(path: str | Path) -> bool:
+    folder = Path(path)
+    if not folder.exists() or not folder.is_dir():
+        return False
+    try:
+        result = subprocess.run(
+            ["svn", "info"],
+            cwd=str(folder),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def svn_update(path: str | Path) -> subprocess.CompletedProcess[str]:
+    folder = Path(path)
+    return subprocess.run(
+        ["svn", "update"],
+        cwd=str(folder),
+        capture_output=True,
+        text=True,
+        check=False,
+    )

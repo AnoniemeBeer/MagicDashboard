@@ -27,6 +27,7 @@ class Shortcut:
     order: int = 0
     id: str = field(default_factory=lambda: uuid4().hex)
     icon_path: str | None = None
+    source_path: str | None = None
 
 
 @dataclass
@@ -75,6 +76,7 @@ class DashboardStore:
                         group=group,
                         order=int(item.get("order", index)),
                         icon_path=item.get("icon_path"),
+                        source_path=str(item.get("source_path")).strip() or None if item.get("source_path") else None,
                     )
                 )
 
@@ -90,4 +92,3 @@ class DashboardStore:
             "shortcuts": [asdict(shortcut) for shortcut in data.shortcuts],
         }
         self.config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-

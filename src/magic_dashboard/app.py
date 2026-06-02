@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .shortcuts import build_shortcut, cache_icon, find_shortcuts, launch_shortcut, open_config_folder
+from .shortcuts import (
+    build_shortcut,
+    cache_icon,
+    find_shortcuts,
+    is_svn_working_copy,
+    launch_shortcut,
+    open_config_folder,
+    open_folder,
+    svn_update,
+)
 from .storage import DashboardData, DashboardStore, Shortcut
 
 
@@ -16,6 +26,7 @@ ACCENT = "#245b47"
 ACCENT_DARK = "#173b30"
 LINE = "#ded5c6"
 WARNING = "#a5402d"
+CARD_LINE = "#e6dccd"
 
 
 class MagicDashboard(tk.Tk):
@@ -32,6 +43,7 @@ class MagicDashboard(tk.Tk):
         self.search_text = tk.StringVar()
         self.icon_images: dict[str, tk.PhotoImage] = {}
         self.selected_shortcut_id: str | None = None
+        self.busy_shortcut_ids: set[str] = set()
 
         self._configure_style()
         self._build_layout()
@@ -151,7 +163,15 @@ class MagicDashboard(tk.Tk):
 
         for index, shortcut in enumerate(shortcuts):
             row, col = divmod(index, 3)
-            card = ShortcutCard(self.grid_frame, shortcut, self._load_icon(shortcut), self.launch, self.select_card)
+            card = ShortcutCard(
+                self.grid_frame,
+                shortcut,
+                self._load_icon(shortcut),
+                self.launch,
+                self.select_card,
+                self.show_card_menu,
+                shortcut.id in self.busy_shortcut_ids,
+            )
             card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
 
         for col in range(3):
@@ -282,11 +302,123 @@ class MagicDashboard(tk.Tk):
     def select_card(self, shortcut: Shortcut) -> None:
         self.selected_shortcut_id = shortcut.id
 
+    def show_card_menu(self, shortcut: Shortcut, widget: tk.Widget) -> None:
+        self.select_card(shortcut)
+        menu = tk.Menu(self, tearoff=False)
+        source_exists = bool(shortcut.source_path and Path(shortcut.source_path).exists())
+
+        menu.add_command(
+            label="Attach source folder" if not shortcut.source_path else "Change source folder",
+            command=lambda: self.set_source_folder(shortcut),
+        )
+        menu.add_command(
+            label="Open source folder",
+            command=lambda: self.open_source_folder(shortcut),
+            state=tk.NORMAL if source_exists else tk.DISABLED,
+        )
+        menu.add_command(
+            label="SVN update",
+            command=lambda: self.update_source_from_svn(shortcut),
+            state=tk.NORMAL if shortcut.source_path and shortcut.id not in self.busy_shortcut_ids else tk.DISABLED,
+        )
+        menu.add_command(
+            label="Clear source folder",
+            command=lambda: self.clear_source_folder(shortcut),
+            state=tk.NORMAL if shortcut.source_path else tk.DISABLED,
+        )
+
+        try:
+            menu.tk_popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
+        finally:
+            menu.grab_release()
+
     def launch(self, shortcut: Shortcut) -> None:
         try:
             launch_shortcut(shortcut.path)
         except Exception as exc:
             messagebox.showerror("Launch failed", f"Could not launch shortcut:\n{shortcut.path}\n\n{exc}")
+
+    def set_source_folder(self, shortcut: Shortcut) -> None:
+        initial_dir = shortcut.source_path or str(Path(shortcut.path).parent)
+        folder = filedialog.askdirectory(title=f"Select source folder for {shortcut.name}", initialdir=initial_dir)
+        if not folder:
+            return
+        shortcut.source_path = str(Path(folder))
+        self._save()
+        self._render_shortcuts()
+
+    def open_source_folder(self, shortcut: Shortcut) -> None:
+        if not shortcut.source_path:
+            messagebox.showinfo("MagicDashboard", "No source folder is linked to this shortcut yet.")
+            return
+        folder = Path(shortcut.source_path)
+        if not folder.exists():
+            messagebox.showerror("MagicDashboard", f"The linked source folder no longer exists:\n{folder}")
+            return
+        open_folder(folder)
+
+    def clear_source_folder(self, shortcut: Shortcut) -> None:
+        if not shortcut.source_path:
+            return
+        if not messagebox.askyesno("Clear source folder", f"Remove the linked source folder for '{shortcut.name}'?"):
+            return
+        shortcut.source_path = None
+        self._save()
+        self._render_shortcuts()
+
+    def update_source_from_svn(self, shortcut: Shortcut) -> None:
+        if not shortcut.source_path:
+            messagebox.showinfo("MagicDashboard", "Link a source folder first.")
+            return
+
+        folder = Path(shortcut.source_path)
+        if not folder.exists():
+            messagebox.showerror("MagicDashboard", f"The linked source folder no longer exists:\n{folder}")
+            return
+        if not folder.is_dir():
+            messagebox.showerror("MagicDashboard", f"The linked source path is not a folder:\n{folder}")
+            return
+        if not is_svn_working_copy(folder):
+            messagebox.showerror(
+                "SVN update failed",
+                f"This folder is not an SVN working copy, or SVN is not available in PATH:\n{folder}",
+            )
+            return
+
+        self.busy_shortcut_ids.add(shortcut.id)
+        self._render_shortcuts()
+
+        def run_update() -> None:
+            try:
+                result = svn_update(folder)
+            except OSError as exc:
+                self.after(0, lambda: self._finish_svn_update(shortcut, None, exc))
+                return
+            self.after(0, lambda: self._finish_svn_update(shortcut, result, None))
+
+        threading.Thread(target=run_update, daemon=True).start()
+
+    def _finish_svn_update(self, shortcut: Shortcut, result, error: OSError | None) -> None:
+        self.busy_shortcut_ids.discard(shortcut.id)
+        self._render_shortcuts()
+
+        if error is not None:
+            messagebox.showerror("SVN update failed", f"Could not start SVN update.\n\n{error}")
+            return
+
+        assert result is not None
+        output = "\n".join(part.strip() for part in [result.stdout, result.stderr] if part.strip()).strip()
+        if result.returncode == 0:
+            messagebox.showinfo(
+                "SVN update complete",
+                output or f"SVN update completed successfully for:\n{shortcut.source_path}",
+            )
+            return
+
+        messagebox.showerror(
+            "SVN update failed",
+            output or f"SVN update failed for:\n{shortcut.source_path}",
+        )
 
     def remove_selected(self) -> None:
         shortcut = self._selected_shortcut()
@@ -355,20 +487,45 @@ class ShortcutCard(ttk.Frame):
         icon: tk.PhotoImage | None,
         launch_callback,
         select_callback,
+        menu_callback,
+        is_busy: bool,
     ) -> None:
         super().__init__(parent, style="Panel.TFrame", padding=16)
         self.shortcut = shortcut
         self.launch_callback = launch_callback
         self.select_callback = select_callback
+        self.menu_callback = menu_callback
 
         self.configure(cursor="hand2")
+        header = ttk.Frame(self, style="Panel.TFrame")
+        header.pack(fill="x")
+
         icon_area = tk.Label(self, bg=PANEL, width=64, height=64)
-        icon_area.pack(anchor="w")
+        icon_area.pack(in_=header, side="left", anchor="nw")
         if icon:
             icon_area.configure(image=icon)
             icon_area.image = icon
         else:
             icon_area.configure(text="↗", fg=ACCENT, font=("Segoe UI Semibold", 30))
+
+        menu_button = tk.Button(
+            header,
+            text="...",
+            font=("Segoe UI Semibold", 11),
+            bg=PANEL,
+            fg=INK,
+            activebackground="#f0e6d8",
+            activeforeground=INK,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=CARD_LINE,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=lambda: self.menu_callback(self.shortcut, menu_button),
+        )
+        menu_button.pack(side="right", anchor="ne")
 
         tk.Label(
             self,
@@ -389,6 +546,27 @@ class ShortcutCard(ttk.Frame):
             justify="left",
         ).pack(anchor="w")
 
+        source_text = shortcut.source_path or "No source folder linked"
+        source_color = ACCENT if shortcut.source_path else MUTED
+        tk.Label(
+            self,
+            text=f"Source: {source_text}",
+            bg=PANEL,
+            fg=source_color,
+            font=("Segoe UI", 8),
+            wraplength=260,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
+        if is_busy:
+            tk.Label(
+                self,
+                text="SVN update in progress...",
+                bg=PANEL,
+                fg=ACCENT,
+                font=("Segoe UI Semibold", 8),
+            ).pack(anchor="w", pady=(8, 0))
+
         buttons = ttk.Frame(self, style="Panel.TFrame")
         buttons.pack(fill="x", pady=(14, 0))
         ttk.Button(buttons, text="Open", style="Primary.TButton", command=lambda: self.launch_callback(self.shortcut)).pack(
@@ -401,9 +579,14 @@ class ShortcutCard(ttk.Frame):
     def _bind_launch_targets(self) -> None:
         self.bind("<Button-1>", self._launch)
         for child in self.winfo_children():
-            if isinstance(child, ttk.Frame):
-                continue
-            child.bind("<Button-1>", self._launch)
+            self._bind_recursive(child)
+
+    def _bind_recursive(self, widget: tk.Widget) -> None:
+        if isinstance(widget, (tk.Button, ttk.Button)):
+            return
+        widget.bind("<Button-1>", self._launch)
+        for child in widget.winfo_children():
+            self._bind_recursive(child)
 
     def _launch(self, _event: tk.Event) -> None:
         self.launch_callback(self.shortcut)

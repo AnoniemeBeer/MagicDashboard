@@ -11,7 +11,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-## Build an exe
+## Build an exe folder
 
 ```powershell
 .\build.ps1
@@ -23,7 +23,21 @@ The executable is written to:
 dist\main.dist\MagicDashboard.exe
 ```
 
-This project uses Nuitka for the exe build instead of PyInstaller. Nuitka produces a compiled standalone app folder, which is usually friendlier to endpoint security tools than a packed PyInstaller executable.
+Important: this is a standalone app folder. Copy the whole `dist\main.dist` folder, not only `MagicDashboard.exe`, because the exe needs the DLLs and Tk files beside it.
+
+## Build one movable exe
+
+```powershell
+.\build-onefile.ps1
+```
+
+The single executable is written to:
+
+```text
+dist\MagicDashboard.exe
+```
+
+This is easier to move around, but endpoint security tools are more likely to inspect or block one-file executables because they unpack themselves at startup.
 
 ## Persistence
 
